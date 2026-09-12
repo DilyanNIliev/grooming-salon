@@ -306,9 +306,9 @@
             </div>
             <div class="calendar__grid" id="cal-grid" role="grid" aria-label="Календар с свободни дати"></div>
             <p class="calendar__legend">
-              <span class="dot dot--free"></span> свободно
-              <span class="dot dot--busy"></span> запълнено
-              <span class="dot dot--sel"></span> избрано
+              <span class="dot dot--free"></span> работен ден
+              <span class="dot dot--busy"></span> почивен ден
+              <span class="dot dot--sel"></span> избрана дата
             </p>
           </div>
         </div>
@@ -627,12 +627,18 @@
     <h2 id="modal-title">Резервацията е приета!</h2>
     <p class="modal__lead" id="modal-lead"></p>
     <dl class="modal__list" id="modal-details"></dl>
-    <div class="modal__notify">
+    <div class="modal__notify" id="modal-notify">
       <p><span aria-hidden="true">✉️</span> Изпратихме потвърждение на <strong id="modal-email"></strong></p>
       <p id="modal-sms"><span aria-hidden="true">📱</span> SMS напомняне 24 ч. преди часа на <strong id="modal-phone"></strong></p>
+      <p><span aria-hidden="true">📅</span> Часът е добавен в календара на салона.</p>
     </div>
-    <p class="modal__small">Демо режим: резервацията се запазва само в този браузър.
-      Виж README.md как да я свържеш с истински имейл/SMS.</p>
+    <div class="modal__notify modal__notify--warn" id="modal-failed" hidden>
+      <p><span aria-hidden="true">⚠️</span> Връзката със салона прекъсна, затова часът
+        <strong>още не е потвърден</strong>.</p>
+      <p>Моля, обадете се на <a href="tel:+359881234567">0888 123 456</a> или ни пишете в
+        <a href="https://wa.me/359881234567" target="_blank" rel="noopener">WhatsApp</a>,
+        за да го запазим.</p>
+    </div>
     <button class="btn btn--primary btn--block" data-close>Разбрах</button>
   </div>
 </div>

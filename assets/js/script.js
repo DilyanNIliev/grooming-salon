@@ -16,9 +16,25 @@
 (function () {
   'use strict';
 
+  /* ------------- 0. КОНФИГУРАЦИЯ ------------- */
+
+  /* Google Apps Script Web App — записва резервацията в Google Sheets,
+     създава събитие в Google Calendar и връща заетите часове.
+     Как се настройва: виж README.md → „Свързване с Google Apps Script".
+     Ако enabled = false, сайтът работи в демо режим (само localStorage). */
+  const GOOGLE_SCRIPT_CONFIG = {
+    enabled: true,
+    webAppUrl: 'https://script.google.com/macros/s/AKfycbzwqelKebMwkjPqzMPIKiOGo3IdGJ-H9XClkHG6ZPzwCiPzdvtV4eIcAWi6Et3eTBhkjA/exec'
+  };
+
+  /* През колко минути да започва нов час: 30, 60, 90…
+     60 = 09:00, 10:00, 11:00…   90 = 09:00, 10:30, 12:00… */
+  const SLOT_STEP_MINUTES = 60;
+
   /* ------------- 1. ДАННИ ------------- */
 
-  // Цените са в лева, по размер: малко / средно / голямо куче / котка
+  // Цените са в лева, времетраенето в минути — по размер:
+  // малко / средно / голямо куче / котка
   const SERVICES = [
     {
       id: 'kapane',
@@ -26,7 +42,7 @@
       name: 'Къпане и сушене',
       desc: 'Топла баня с хипоалергенен шампоан, масаж на кожата, сушене с безшумен сешоар и сресване.',
       price: { small: 25, medium: 35, large: 45, cat: 40 },
-      time: { small: '45 мин', medium: '60 мин', large: '80 мин', cat: '50 мин' }
+      minutes: { small: 45, medium: 60, large: 80, cat: 50 }
     },
     {
       id: 'podstrigvane',
@@ -34,7 +50,7 @@
       name: 'Подстригване',
       desc: 'Оформяне с машинка или ножица по стандарта на породата или по ваше желание.',
       price: { small: 35, medium: 50, large: 70, cat: 60 },
-      time: { small: '60 мин', medium: '90 мин', large: '120 мин', cat: '75 мин' }
+      minutes: { small: 60, medium: 90, large: 120, cat: 75 }
     },
     {
       id: 'nokti',
@@ -42,7 +58,7 @@
       name: 'Подрязване на нокти',
       desc: 'Внимателно скъсяване и изпиляване, без досягане на кръвоносния съд.',
       price: { small: 10, medium: 12, large: 15, cat: 15 },
-      time: { small: '15 мин', medium: '15 мин', large: '20 мин', cat: '20 мин' }
+      minutes: { small: 15, medium: 15, large: 20, cat: 20 }
     },
     {
       id: 'ushi',
@@ -50,7 +66,7 @@
       name: 'Почистване на уши',
       desc: 'Почистване с ветеринарен разтвор и обезкосмяване на ушния канал при нужда.',
       price: { small: 10, medium: 12, large: 15, cat: 15 },
-      time: { small: '15 мин', medium: '15 мин', large: '20 мин', cat: '15 мин' }
+      minutes: { small: 15, medium: 15, large: 20, cat: 15 }
     },
     {
       id: 'vazli',
@@ -58,7 +74,7 @@
       name: 'Третиране на възли',
       desc: 'Търпеливо разплитане със специален балсам. Ако възлите са до кожата — обсъждаме заедно.',
       price: { small: 20, medium: 30, large: 40, cat: 45 },
-      time: { small: '30 мин', medium: '45 мин', large: '60 мин', cat: '60 мин' }
+      minutes: { small: 30, medium: 45, large: 60, cat: 60 }
     },
     {
       id: 'paket',
@@ -67,7 +83,7 @@
       name: 'Пълен пакет',
       desc: 'Къпане + подстригване + нокти + уши + парфюм и панделка. Най-изгодно.',
       price: { small: 55, medium: 75, large: 100, cat: 85 },
-      time: { small: '90 мин', medium: '120 мин', large: '150 мин', cat: '110 мин' }
+      minutes: { small: 90, medium: 120, large: 150, cat: 110 }
     }
   ];
 
@@ -112,21 +128,20 @@
 
   const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
 
-  /** Детерминиран псевдо-случаен генератор — за да са „заетите" часове
-   *  еднакви при всяко зареждане на страницата (иначе изглежда счупено). */
-  function seeded(str) {
-    let h = 2166136261;
-    for (let i = 0; i < str.length; i++) {
-      h ^= str.charCodeAt(i);
-      h = Math.imul(h, 16777619);
-    }
-    return () => {
-      h += 0x6D2B79F5;
-      let t = h;
-      t = Math.imul(t ^ (t >>> 15), t | 1);
-      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
+  const pad2 = (n) => String(n).padStart(2, '0');
+
+  /** 90 -> „1 ч. 30 мин", 120 -> „2 ч.", 45 -> „45 мин" */
+  function fmtDuration(min) {
+    if (min < 60) return min + ' мин';
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    return h + ' ч.' + (m ? ' ' + m + ' мин' : '');
+  }
+
+  /** „9:00" или „09:00:00" -> „09:00" (Apps Script връща различни формати). */
+  function normTime(t) {
+    const m = String(t).match(/(\d{1,2}):(\d{2})/);
+    return m ? pad2(m[1]) + ':' + m[2] : String(t);
   }
 
   const readBookings = () => {
@@ -147,33 +162,51 @@
     }
   };
 
-  /** Всички часове за дадена дата + кои са заети. */
-  function slotsFor(dateStr) {
-    const d = new Date(dateStr + 'T00:00:00');
-    const range = HOURS[d.getDay()];
+  /** Всички възможни начални часове за деня според работното време
+   *  и избраната стъпка (SLOT_STEP_MINUTES). */
+  function buildSlots(dateStr) {
+    const range = HOURS[new Date(dateStr + 'T00:00:00').getDay()];
     if (!range) return [];
-
-    const rnd = seeded(dateStr);
-    const taken = readBookings()
-      .filter((b) => b.date === dateStr)
-      .map((b) => b.time);
 
     // За днешния ден не предлагаме часове, които вече са минали
     // (плюс 1 час буфер за пътуване до салона).
     const now = new Date();
-    const isToday = dateStr === iso(now);
-    const earliest = isToday ? now.getHours() + 1 : -1;
+    const earliest = dateStr === iso(now) ? now.getHours() * 60 + now.getMinutes() + 60 : -1;
 
     const out = [];
-    for (let h = range[0]; h < range[1]; h++) {
-      const time = String(h).padStart(2, '0') + ':00';
-      const busy = h <= earliest || rnd() < 0.38 || taken.indexOf(time) !== -1;
-      out.push({ time: time, free: !busy, past: h <= earliest });
+    for (let m = range[0] * 60; m + SLOT_STEP_MINUTES <= range[1] * 60; m += SLOT_STEP_MINUTES) {
+      if (m > earliest) out.push(pad2(Math.floor(m / 60)) + ':' + pad2(m % 60));
     }
     return out;
   }
 
-  const freeCount = (dateStr) => slotsFor(dateStr).filter((s) => s.free).length;
+  /** Часовете, които вече са заети за дадена дата.
+   *  Идват от Google Calendar през Apps Script, плюс запазените от този браузър. */
+  let busySlots = [];
+  let backendOnline = true;
+
+  async function loadBusySlots(dateStr) {
+    busySlots = readBookings()
+      .filter((b) => b.date === dateStr)
+      .map((b) => normTime(b.time));
+
+    if (!GOOGLE_SCRIPT_CONFIG.enabled || !GOOGLE_SCRIPT_CONFIG.webAppUrl) return;
+
+    try {
+      const url = GOOGLE_SCRIPT_CONFIG.webAppUrl + '?date=' + encodeURIComponent(dateStr);
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data.status === 'success' && Array.isArray(data.busySlots)) {
+        busySlots = busySlots.concat(data.busySlots.map(normTime));
+        backendOnline = true;
+      }
+    } catch (err) {
+      // Няма връзка с календара — показваме всички часове и предупреждаваме,
+      // че часът се потвърждава допълнително.
+      backendOnline = false;
+      console.warn('Заетите часове не бяха заредени от Google Calendar:', err);
+    }
+  }
 
   /* ------------- 3. НАВИГАЦИЯ ------------- */
 
@@ -255,7 +288,7 @@
         <p class="card__desc">${s.desc}</p>
         <div class="card__meta">
           <span class="card__price">${s.price[size]} лв. <small>/ ${SIZE_LABEL[size]}</small></span>
-          <span class="card__time">⏱ ${s.time[size]}</span>
+          <span class="card__time">⏱ ${fmtDuration(s.minutes[size])}</span>
         </div>
         <button type="button" class="btn btn--ghost card__btn" data-book="${s.id}" data-size="${size}">
           Запази час
@@ -398,15 +431,16 @@
       const closed = !HOURS[date.getDay()];
       const past = date < today;
       const tooFar = date > maxDate;
-      const free = (closed || past || tooFar) ? 0 : freeCount(key);
-      const disabled = closed || past || tooFar || free === 0;
+      // За днес денят отпада, когато всички часове вече са минали.
+      const noHoursLeft = !closed && !past && !tooFar && buildSlots(key).length === 0;
+      const disabled = closed || past || tooFar || noHoursLeft;
 
       html += `<button type="button" class="day${key === selectedDate ? ' is-selected' : ''}${
         key === iso(today) ? ' is-today' : ''}" data-date="${key}"${disabled ? ' disabled' : ''}
         aria-label="${d} ${MONTHS[viewMonth]}${disabled
           ? (closed ? ', почивен ден' : ', няма свободни часове')
-          : ', ' + free + ' свободни часа'}">
-        ${d}${disabled ? '<span class="day__dot"></span>' : '<span class="day__dot"></span>'}
+          : ', работен ден'}">
+        ${d}<span class="day__dot"></span>
       </button>`;
     }
 
@@ -425,14 +459,17 @@
     renderCalendar();
   });
 
-  calGrid.addEventListener('click', (e) => {
+  calGrid.addEventListener('click', async (e) => {
     const btn = e.target.closest('.day[data-date]');
     if (!btn || btn.disabled) return;
     selectedDate = btn.dataset.date;
     selectedTime = null;
     renderCalendar();
-    renderSlots();
     updateSummary();
+
+    slotsBox.innerHTML = '<p class="slots__empty">Зареждам свободните часове…</p>';
+    await loadBusySlots(selectedDate);
+    renderSlots();
   });
 
   renderCalendar();
@@ -446,16 +483,28 @@
       slotsBox.innerHTML = '<p class="slots__empty">Първо избери дата от календара.</p>';
       return;
     }
-    const list = slotsFor(selectedDate).filter((s) => !s.past);
+    const list = buildSlots(selectedDate);
     if (!list.length) {
       slotsBox.innerHTML =
         '<p class="slots__empty">За днес вече няма свободни часове — изберете друга дата.</p>';
       return;
     }
-    slotsBox.innerHTML = list.map((s) => `
-      <button type="button" class="slot${s.time === selectedTime ? ' is-selected' : ''}"
-        data-time="${s.time}"${s.free ? '' : ' disabled'}
-        aria-label="${s.time}${s.free ? '' : ' — зает'}">${s.time}</button>`).join('');
+
+    let html = list.map((time) => {
+      const busy = busySlots.indexOf(time) !== -1;
+      return `<button type="button" class="slot${time === selectedTime ? ' is-selected' : ''}"
+        data-time="${time}"${busy ? ' disabled' : ''}
+        aria-label="${time}${busy ? ' — зает' : ''}">${time}</button>`;
+    }).join('');
+
+    if (list.every((t) => busySlots.indexOf(t) !== -1)) {
+      html += '<p class="slots__empty">Всички часове за този ден са заети — изберете друга дата.</p>';
+    }
+    if (!backendOnline) {
+      html += '<p class="slots__note">⚠️ В момента не виждаме календара на салона. ' +
+        'Изпратете заявката — ще ви потвърдим часа с обаждане.</p>';
+    }
+    slotsBox.innerHTML = html;
   }
 
   slotsBox.addEventListener('click', (e) => {
@@ -494,7 +543,7 @@
     serviceSel.innerHTML = '<option value="">— избери услуга —</option>' +
       SERVICES.map((s) => {
         const label = size
-          ? `${s.name} — ${s.price[size]} лв. · ${s.time[size]}`
+          ? `${s.name} — ${s.price[size]} лв. · ${fmtDuration(s.minutes[size])}`
           : s.name;
         return `<option value="${s.id}">${label}</option>`;
       }).join('');
@@ -509,7 +558,7 @@
     box.hidden = false;
     $('#price-value').textContent = svc.price[size] + ' лв.';
     $('#price-duration').textContent =
-      `${svc.name} за ${SIZE_LABEL[size]} · продължителност ${svc.time[size]}`;
+      `${svc.name} за ${SIZE_LABEL[size]} · продължителност ${fmtDuration(svc.minutes[size])}`;
   }
 
   sizeSel.addEventListener('change', () => { fillServiceOptions(); updatePrice(); });
@@ -574,7 +623,31 @@
     if ($('#gdpr').checked) $('[data-error-for="gdpr"]').classList.remove('is-shown');
   });
 
-  form.addEventListener('submit', (e) => {
+  /** Изпраща резервацията към Google Apps Script.
+   *  Apps Script я записва в Google Sheets и създава събитие в Google Calendar.
+   *  Content-Type: text/plain — така браузърът не праща CORS preflight заявка,
+   *  която Apps Script не обслужва. */
+  async function sendToGoogleAppsScript(payload) {
+    if (!GOOGLE_SCRIPT_CONFIG.enabled || !GOOGLE_SCRIPT_CONFIG.webAppUrl) {
+      console.warn('Google Apps Script не е настроен — резервацията остава само в браузъра.');
+      return { ok: false, busy: false };
+    }
+    try {
+      const res = await fetch(GOOGLE_SCRIPT_CONFIG.webAppUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json().catch(() => ({}));
+      // „busy" = някой е взел часа между зареждането и изпращането
+      return { ok: data.status !== 'error' && data.status !== 'busy', busy: data.status === 'busy' };
+    } catch (err) {
+      console.error('Грешка при изпращане към Google Apps Script:', err);
+      return { ok: false, busy: false };
+    }
+  }
+
+  form.addEventListener('submit', async (e) => {
     e.preventDefault();
     if (!validate()) {
       const firstErr = $('.field.has-error input, .field.has-error select');
@@ -584,42 +657,77 @@
 
     const svc = SERVICES.find((s) => s.id === serviceSel.value);
     const size = sizeSel.value;
+    const pet = $('#pet').value.trim();
+    const breed = $('#breed').value.trim();
+    const ownNotes = $('#notes').value.trim();
+    const sms = $('#sms').checked;
+
+    // Данните за любимеца влизат и в бележката, за да се виждат
+    // в имейла и в събитието на календара, каквито и колони да има таблицата.
+    const notes = [
+      'Любимец: ' + pet + (breed ? ' (' + breed + ')' : ''),
+      'Размер: ' + SIZE_LABEL[size],
+      sms ? 'Желае SMS напомняне' : null,
+      ownNotes ? 'Бележка: ' + ownNotes : null
+    ].filter(Boolean).join('. ');
 
     const booking = {
-      date: selectedDate,
-      time: selectedTime,
-      owner: $('#owner').value.trim(),
+      /* --- полета, които Google Apps Script очаква --- */
+      name: $('#owner').value.trim(),
       phone: $('#phone').value.trim(),
       email: $('#email').value.trim(),
-      pet: $('#pet').value.trim(),
-      breed: $('#breed').value.trim(),
-      size: size,
-      service: svc.name,
+      notes: notes,
+      categoryLabel: SIZE_LABEL[size],
+      serviceName: svc.name,
+      dateFormatted: prettyDate(selectedDate),
+      time: selectedTime,
+      rawDate: selectedDate,
+      rawTime: selectedTime,
+      duration: svc.minutes[size],
       price: svc.price[size],
-      duration: svc.time[size],
-      notes: $('#notes').value.trim(),
-      sms: $('#sms').checked,
+
+      /* --- допълнителни полета за груминга --- */
+      petName: pet,
+      petBreed: breed,
+      petSize: size,
+      smsReminder: sms,
+      ownerNotes: ownNotes,
+
+      /* --- за локалния списък със заети часове --- */
+      date: selectedDate,
       created: new Date().toISOString()
     };
 
+    const btn = $('#booking-form button[type="submit"]');
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Изпращаме…';
+
+    const result = await sendToGoogleAppsScript(booking);
+
+    btn.disabled = false;
+    btn.textContent = label;
+
+    // Часът е бил зает секунди преди изпращането — не го записваме.
+    if (result.busy) {
+      toast('⏰ Съжаляваме, този час току-що беше зает. Моля, изберете друг.');
+      selectedTime = null;
+      await loadBusySlots(selectedDate);
+      renderSlots();
+      updateSummary();
+      $('#slots').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+
     saveBooking(booking);
+    showModal(booking, result.ok);
 
-    /* --- ТУК се свързва истински бекенд ---
-       Виж README.md → „Как да получавам резервациите на имейл".
-       Пример:
-       fetch('https://formspree.io/f/ВАШИЯТ_ID', {
-         method: 'POST',
-         headers: { 'Content-Type': 'application/json' },
-         body: JSON.stringify(booking)
-       });
-    */
-
-    showModal(booking);
     form.reset();
     selectedTime = null;
     $('#price-box').hidden = true;
     fillServiceOptions();
     renderCalendar();
+    await loadBusySlots(selectedDate);
     renderSlots();
     updateSummary();
   });
@@ -629,20 +737,32 @@
   const modal = $('#modal');
   let lastFocused = null;
 
-  function showModal(b) {
-    $('#modal-lead').innerHTML =
-      `Очакваме <strong>${b.pet}</strong> на <strong>${prettyDate(b.date)}</strong> в <strong>${b.time} ч.</strong>`;
+  let lastSendOk = true;
+
+  /** sent = true, ако резервацията е стигнала до Google Apps Script. */
+  function showModal(b, sent) {
+    lastSendOk = sent;
+
+    $('.modal__check', modal).textContent = sent ? '✓' : '!';
+    $('.modal__check', modal).classList.toggle('modal__check--warn', !sent);
+    $('#modal-title').textContent = sent ? 'Резервацията е приета!' : 'Заявката е записана';
+    $('#modal-lead').innerHTML = sent
+      ? `Очакваме <strong>${b.petName}</strong> на <strong>${b.dateFormatted}</strong> в <strong>${b.time} ч.</strong>`
+      : `Записахме заявка за <strong>${b.petName}</strong> на <strong>${b.dateFormatted}</strong> в
+         <strong>${b.time} ч.</strong>, но точно сега не успяхме да я изпратим до салона.`;
 
     $('#modal-details').innerHTML = `
-      <dt>Услуга</dt><dd>${b.service}</dd>
-      <dt>Размер</dt><dd>${SIZE_LABEL[b.size]}</dd>
-      ${b.breed ? `<dt>Порода</dt><dd>${b.breed}</dd>` : ''}
-      <dt>Продължителност</dt><dd>${b.duration}</dd>
+      <dt>Услуга</dt><dd>${b.serviceName}</dd>
+      <dt>Размер</dt><dd>${b.categoryLabel}</dd>
+      ${b.petBreed ? `<dt>Порода</dt><dd>${b.petBreed}</dd>` : ''}
+      <dt>Продължителност</dt><dd>${fmtDuration(b.duration)}</dd>
       <dt>Цена</dt><dd>${b.price} лв.</dd>`;
 
     $('#modal-email').textContent = b.email;
     $('#modal-phone').textContent = b.phone;
-    $('#modal-sms').hidden = !b.sms;
+    $('#modal-sms').hidden = !b.smsReminder;
+    $('#modal-notify').hidden = !sent;
+    $('#modal-failed').hidden = sent;
 
     lastFocused = document.activeElement;
     modal.hidden = false;
@@ -654,7 +774,9 @@
     modal.hidden = true;
     document.body.style.overflow = '';
     if (lastFocused) lastFocused.focus();
-    toast('🎉 Часът е запазен! Проверете пощата си.');
+    toast(lastSendOk
+      ? '🎉 Часът е запазен! Проверете пощата си.'
+      : '📞 Обадете ни се на 0888 123 456, за да потвърдим часа.');
   }
 
   modal.addEventListener('click', (e) => {
